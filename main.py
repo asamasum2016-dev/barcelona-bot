@@ -1,112 +1,100 @@
 import requests
 import time
 import os
-import threading
-import asyncio
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from flask import Flask
+from telegram import Bot
+from datetime import datetime, timedelta
+import pytz
 
 TOKEN = os.getenv("TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 bot = Bot(token=TOKEN)
-bot.send_message(chat_id=CHANNEL_ID, text="🔥 البوت شغال الآن!")
-cache = {}
 
-TEAM_NAME = "Barcelona"
+sent_matches = set()
+live_matches = {}
+sent_goals = set()
 
-# 🧠 جلب المباريات
+# 🌍 التوقيت المحلي (غيّرها إذا تبغى)
+LOCAL_TZ = pytz.timezone("Asia/Riyadh")
+
+def send(msg):
+    bot.send_message(chat_id=CHANNEL_ID, text=msg)
+
 def get_matches():
+    url = "https://site.api.espn.com/apis/v2/sports/soccer/eng.1/scoreboard"
+    return requests.get(url).json().get("events", [])
+
+def get_goals(match_id):
+    url = f"https://site.api.espn.com/apis/v2/sports/soccer/eng.1/summary?event={match_id}"
+    data = requests.get(url).json()
+
+    goals = []
+
     try:
-        url = "https://site.api.espn.com/apis/v2/sports/soccer/esp.1/scoreboard"
-        return requests.get(url).json().get("events", [])
+        plays = data["plays"]
+
+        for play in plays:
+            if play.get("type", {}).get("text") == "Goal":
+                minute = play.get("clock", {}).get("displayValue", "??")
+                player = play.get("athletesInvolved", [{}])[0].get("displayName", "لاعب")
+
+                goals.append((minute, player))
     except:
-        return []
+        pass
 
-# ⚡ إرسال رسالة
-async def send(msg, buttons=None):
-    try:
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=msg,
-            reply_markup=buttons
-        )
-    except Exception as e:
-        print("Send error:", e)
+    return goals
 
-# 🔘 أزرار
-def get_buttons(match_id):
-    keyboard = [
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data=f"stats_{match_id}")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ⚽ النظام الرئيسي
-def run_bot():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
+def check_matches():
     while True:
-        try:
-            matches = get_matches()
+        matches = get_matches()
 
-            for m in matches:
-                comp = m["competitions"][0]
+        for match in matches:
+            comp = match["competitions"][0]
 
-                home = comp["competitors"][0]["team"]["displayName"]
-                away = comp["competitors"][1]["team"]["displayName"]
+            home = comp["competitors"][0]["team"]["displayName"]
+            away = comp["competitors"][1]["team"]["displayName"]
 
-                if TEAM_NAME not in home and TEAM_NAME not in away:
-                    continue
+            match_id = match["id"]
+            status = match["status"]["type"]["name"]
 
-                home_score = int(comp["competitors"][0]["score"])
-                away_score = int(comp["competitors"][1]["score"])
-                match_id = m["id"]
+            # 🕒 تحويل الوقت إلى المحلي
+            utc_time = datetime.fromisoformat(match["date"].replace("Z", "+00:00"))
+            local_time = utc_time.astimezone(LOCAL_TZ)
+            now = datetime.now(LOCAL_TZ)
 
-                status = m["status"]["type"]["short"]
+            # 🔔 قبل المباراة 15 دقيقة
+            if 0 < (local_time - now).total_seconds() <= 900:
+                if match_id not in sent_matches:
+                    send(f"⏳ بعد 15 دقيقة!\n🔥 {home} vs {away}\n🕒 {local_time.strftime('%H:%M')}")
+                    sent_matches.add(match_id)
 
-                # 🟢 بداية المباراة
-                if status in ["1H", "2H", "LIVE"] and match_id not in cache:
-                    cache[match_id] = (home_score, away_score)
+            # ⚽ المباراة شغالة
+            if status == "STATUS_IN_PROGRESS":
+                home_score = comp["competitors"][0]["score"]
+                away_score = comp["competitors"][1]["score"]
 
-                    loop.run_until_complete(send(
-                        f"🟢 بدأت المباراة\n{home} vs {away}\n⚽ {home_score}-{away_score}",
-                        get_buttons(match_id)
-                    ))
+                score = f"{home} {home_score} - {away_score} {away}"
 
-                # ⚽ تحديث الأهداف
-                if match_id in cache:
-                    old_home, old_away = cache[match_id]
+                if match_id not in live_matches:
+                    send(f"🚨 بدأت المباراة!\n{score}")
+                    live_matches[match_id] = score
+                else:
+                    if live_matches[match_id] != score:
+                        send(f"📊 تحديث:\n{score}")
+                        live_matches[match_id] = score
 
-                    if home_score != old_home or away_score != old_away:
-                        loop.run_until_complete(send(
-                            f"⚽ هدف!\n{home} {home_score}-{away_score} {away}"
-                        ))
+                # 🔥 الأهداف
+                goals = get_goals(match_id)
 
-                    cache[match_id] = (home_score, away_score)
+                for minute, player in goals:
+                    goal_id = f"{match_id}-{minute}-{player}"
 
-                # 🔚 نهاية المباراة
-                if status == "FT" and not cache.get(f"{match_id}_end"):
-                    cache[f"{match_id}_end"] = True
+                    if goal_id not in sent_goals:
+                        send(f"⚽ هدف!\n👤 {player}\n⏱️ {minute}\n🏟️ {home} vs {away}")
+                        sent_goals.add(goal_id)
 
-                    loop.run_until_complete(send(
-                        f"🔚 انتهت المباراة\n{home} {home_score}-{away_score} {away}"
-                    ))
+        time.sleep(30)
 
-        except Exception as e:
-            print("Error:", e)
-
-        time.sleep(20)
-
-# 🌐 Flask (مهم لـ Railway)
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "SofaScore Bot Running 🔥"
-
-def run_web():
-    app.run(host="0.0.0.0", port=8080)
-
-threading.Thread(target=run_bot).start()
-run_web()
+if __name__ == "__main__":
+    send("🔥 البوت يعمل - نسخة PRO")
+    check_matches()
