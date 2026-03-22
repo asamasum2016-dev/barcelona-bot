@@ -10,6 +10,7 @@ TOKEN = os.getenv("TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 bot = Bot(token=TOKEN)
+bot.send_message(chat_id=CHANNEL_ID, text="🔥 البوت شغال الآن!")
 cache = {}
 
 TEAM_NAME = "Barcelona"
