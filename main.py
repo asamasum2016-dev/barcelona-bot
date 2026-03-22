@@ -1,9 +1,10 @@
 import requests
 import time
-import threading
 import os
-from datetime import datetime, timezone
+import threading
+import asyncio
 from telegram import Bot
+from flask import Flask
 
 TOKEN = os.getenv("TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -19,7 +20,16 @@ def get_matches():
     except:
         return []
 
+async def send(msg):
+    try:
+        await bot.send_message(chat_id=CHANNEL_ID, text=msg)
+    except Exception as e:
+        print("Send error:", e)
+
 def run_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     while True:
         try:
             matches = get_matches()
@@ -40,13 +50,13 @@ def run_bot():
 
                 if match_id not in cache:
                     cache[match_id] = (home_score, away_score)
-                    bot.send_message(chat_id=CHANNEL_ID, text=f"🔥 {home} vs {away}\n{home_score}-{away_score}")
+                    loop.run_until_complete(send(f"🔥 {home} vs {away}\n{home_score}-{away_score}"))
 
                 else:
                     old_home, old_away = cache[match_id]
 
                     if home_score != old_home or away_score != old_away:
-                        bot.send_message(chat_id=CHANNEL_ID, text=f"⚽ تحديث\n{home} {home_score}-{away_score} {away}")
+                        loop.run_until_complete(send(f"⚽ تحديث\n{home} {home_score}-{away_score} {away}"))
 
                     cache[match_id] = (home_score, away_score)
 
@@ -55,8 +65,7 @@ def run_bot():
 
         time.sleep(20)
 
-# Flask (لتشغيل Railway)
-from flask import Flask
+# Flask server (مهم لـ Railway)
 app = Flask(__name__)
 
 @app.route("/")
